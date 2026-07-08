@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arena // Blue vs Red</title>
+<style>
+  :root{
+    --bg: #0a0d12;
+    --bg2: #10151d;
+    --blue: #3fa9ff;
+    --blue-dim: #1b4a70;
+    --red: #ff4d4d;
+    --red-dim: #702020;
+    --ink: #cfd8e3;
+    --dim: #5c6b7a;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; height:100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    overflow:hidden;
+  }
+  #app{
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    height:100%;
+    gap:14px;
+  }
+  h1{
+    margin:0;
+    font-size:15px;
+    letter-spacing:0.35em;
+    font-weight:500;
+    text-transform:uppercase;
+    color:var(--dim);
+  }
+  h1 span.b{ color:var(--blue); }
+  h1 span.r{ color:var(--red); }
+
+  #hud{
+    display:flex; align-items:center; gap:26px;
+    font-size:13px; letter-spacing:0.05em;
+  }
+  .stat{ display:flex; align-items:center; gap:8px; }
+  .dot{ width:9px; height:9px; border-radius:50%; display:inline-block; }
+  .dot.blue{ background:var(--blue); box-shadow:0 0 8px var(--blue); }
+  .dot.red{ background:var(--red); box-shadow:0 0 8px var(--red); }
+  .count{ font-variant-numeric: tabular-nums; min-width:1.4em; display:inline-block; }
+
+  #stage{
+    position:relative;
+    border:1px solid #1c232d;
+    border-radius:4px;
+    background:
+      radial-gradient(circle at 50% 50%, var(--bg2), var(--bg) 75%);
+    box-shadow: 0 0 60px rgba(0,0,0,0.6) inset, 0 0 0 1px rgba(255,255,255,0.02);
+  }
+  canvas{ display:block; }
+
+  #overlay{
+    position:absolute; inset:0;
+    display:none;
+    align-items:center; justify-content:center;
+    flex-direction:column;
+    gap:18px;
+    background:rgba(6,8,11,0.82);
+    backdrop-filter: blur(2px);
+  }
+  #overlay.show{ display:flex; }
+  #winnerLabel{
+    font-size:34px;
+    letter-spacing:0.15em;
+    text-transform:uppercase;
+    font-weight:600;
+  }
+  #winnerLabel.blue{ color:var(--blue); text-shadow:0 0 30px var(--blue); }
+  #winnerLabel.red{ color:var(--red); text-shadow:0 0 30px var(--red); }
+  #sub{ font-size:12px; color:var(--dim); letter-spacing:0.1em; }
+
+  button{
+    font-family:inherit;
+    background:transparent;
+    border:1px solid var(--dim);
+    color:var(--ink);
+    padding:9px 20px;
+    font-size:12px;
+    letter-spacing:0.15em;
+    text-transform:uppercase;
+    cursor:pointer;
+    border-radius:2px;
+    transition:border-color .15s, color .15s;
+  }
+  button:hover{ border-color:var(--ink); color:#fff; }
+
+  #controls{ display:flex; gap:10px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1><span class="b">Blue</span> vs <span class="r">Red</span> // Arena</h1>
+  <div id="hud">
+    <div class="stat"><span class="dot blue"></span>Blue <span class="count" id="blueCount">0</span></div>
+    <div class="stat"><span class="dot red"></span>Red <span class="count" id="redCount">0</span></div>
+    <div class="stat" style="color:var(--dim)">Balls <span class="count" id="totalCount">0</span></div>
+  </div>
+
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="overlay">
+      <div id="winnerLabel">—</div>
+      <div id="sub">last ball standing</div>
+      <button id="restartBtn">Restart</button>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button id="resetBtn">Reset</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- config ----------
+  const W = 860, H = 560;
+  const PER_TEAM = 9;
+  const BASE_R = 11;
+  const MAX_DRIFT_ACCEL = 0.06;
+  const MAX_SPEED = 2.6;
+  const FRICTION = 0.995;
+  const SIZE_MATCH_TOL = 0.08;      // relative radius diff considered "same size"
+  const SPLIT_MIN_R = 27;           // above this radius, equal-size collisions split instead of bounce
+  const SPLIT_FLOOR_R = 9;          // never split into something smaller than this
+
+  const canvas = document.getElementById('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const blueCountEl = document.getElementById('blueCount');
+  const redCountEl = document.getElementById('redCount');
+  const totalCountEl = document.getElementById('totalCount');
+  const overlay = document.getElementById('overlay');
+  const winnerLabel = document.getElementById('winnerLabel');
+  const restartBtn = document.getElementById('restartBtn');
+  const resetBtn = document.getElementById('resetBtn');
+
+  const TEAM_COLOR = {
+    blue: { main:'#3fa9ff', glow:'rgba(63,169,255,0.55)', core:'#dff1ff' },
+    red:  { main:'#ff4d4d', glow:'rgba(255,77,77,0.55)',  core:'#ffe2e2' }
+  };
+
+  let balls = [];
+  let particles = [];
+  let running = true;
+  let idCounter = 0;
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+  function areaR(r){ return r*r; }
+  function radiusFromArea(a){ return Math.sqrt(a); }
+
+  function makeBall(team, r, x, y, vx, vy){
+    return {
+      id: idCounter++,
+      team, r,
+      x: x ?? rand(r+2, W-r-2),
+      y: y ?? rand(r+2, H-r-2),
+      vx: vx ?? rand(-1,1),
+      vy: vy ?? rand(-1,1),
+      dead:false,
+      pulse: 0
+    };
+  }
+
+  function init(){
+    balls = [];
+    particles = [];
+    idCounter = 0;
+    for(let i=0;i<PER_TEAM;i++){
+      balls.push(makeBall('blue', BASE_R));
+      balls.push(makeBall('red', BASE_R));
+    }
+    running = true;
+    overlay.classList.remove('show');
+  }
+
+  // ---------- physics ----------
+  function step(){
+    // drift + movement
+    for(const b of balls){
+      b.vx += rand(-MAX_DRIFT_ACCEL, MAX_DRIFT_ACCEL);
+      b.vy += rand(-MAX_DRIFT_ACCEL, MAX_DRIFT_ACCEL);
+      b.vx *= FRICTION; b.vy *= FRICTION;
+      const sp = Math.hypot(b.vx, b.vy);
+      if(sp > MAX_SPEED){ b.vx = b.vx/sp*MAX_SPEED; b.vy = b.vy/sp*MAX_SPEED; }
+      if(sp < 0.25){ // keep drifting, never fully stall
+        const ang = rand(0, Math.PI*2);
+        b.vx += Math.cos(ang)*0.05;
+        b.vy += Math.sin(ang)*0.05;
+      }
+      b.x += b.vx; b.y += b.vy;
+
+      if(b.x - b.r < 0){ b.x = b.r; b.vx = Math.abs(b.vx); }
+      if(b.x + b.r > W){ b.x = W - b.r; b.vx = -Math.abs(b.vx); }
+      if(b.y - b.r < 0){ b.y = b.r; b.vy = Math.abs(b.vy); }
+      if(b.y + b.r > H){ b.y = H - b.r; b.vy = -Math.abs(b.vy); }
+
+      if(b.pulse > 0) b.pulse -= 0.05;
+    }
+
+    // collisions
+    const newBalls = [];
+    for(let i=0;i<balls.length;i++){
+      const a = balls[i];
+      if(a.dead) continue;
+      for(let j=i+1;j<balls.length;j++){
+        const b = balls[j];
+        if(b.dead) continue;
+        const dx = b.x-a.x, dy = b.y-a.y;
+        const dist = Math.hypot(dx,dy);
+        if(dist < a.r + b.r && dist > 0){
+          resolveCollision(a, b, dx, dy, dist, newBalls);
+          if(a.dead) break;
+        }
+      }
+    }
+    if(newBalls.length) balls = balls.concat(newBalls);
+    balls = balls.filter(b=>!b.dead);
+
+    // particles
+    for(const p of particles){
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.94; p.vy *= 0.94;
+      p.life -= p.decay;
+    }
+    particles = particles.filter(p=>p.life>0);
+
+    // win check
+    if(running && balls.length <= 1){
+      running = false;
+      const winner = balls[0];
+      winnerLabel.textContent = winner ? winner.team.toUpperCase() + ' WINS' : 'DRAW';
+      winnerLabel.className = winner ? winner.team : '';
+      overlay.classList.add('show');
+    }
+  }
+
+  function resolveCollision(a, b, dx, dy, dist, newBalls){
+    const nx = dx/dist, ny = dy/dist;
+
+    if(a.team === b.team){
+      // ---- MERGE ----
+      const newR = radiusFromArea(areaR(a.r) + areaR(b.r));
+      const ma = areaR(a.r), mb = areaR(b.r), mt = ma+mb;
+      const nvx = (a.vx*ma + b.vx*mb)/mt;
+      const nvy = (a.vy*ma + b.vy*mb)/mt;
+      const nxp = (a.x*ma + b.x*mb)/mt;
+      const nyp = (a.y*ma + b.y*mb)/mt;
+      a.r = Math.min(newR, Math.min(W,H)/2 - 4);
+      a.x = clamp(nxp, a.r, W-a.r);
+      a.y = clamp(nyp, a.r, H-a.r);
+      a.vx = nvx; a.vy = nvy;
+      a.pulse = 1;
+      b.dead = true;
+      spawnBurst((a.x), (a.y), TEAM_COLOR[a.team].main, 8, 1.2);
+      return;
+    }
+
+    // different teams
+    const sizeDiff = Math.abs(a.r - b.r) / Math.max(a.r,b.r);
+
+    if(sizeDiff <= SIZE_MATCH_TOL){
+      const bigEnough = a.r >= SPLIT_MIN_R && (a.r/Math.SQRT2) >= SPLIT_FLOOR_R;
+      if(bigEnough){
+        // ---- SPLIT ----
+        splitBall(a, nx, ny, newBalls);
+        splitBall(b, -nx, -ny, newBalls);
+        a.dead = true; b.dead = true;
+        spawnBurst((a.x+b.x)/2, (a.y+b.y)/2, '#ffffff', 22, 2.2);
+      } else {
+        // ---- SPECTACULAR BOUNCE ----
+        elasticBounce(a, b, nx, ny);
+        a.pulse = 1; b.pulse = 1;
+        spawnBurst((a.x+b.x)/2, (a.y+b.y)/2, '#ffffff', 14, 1.6);
+      }
+    } else {
+      // ---- ABSORB ----
+      const big = a.r > b.r ? a : b;
+      const small = a.r > b.r ? b : a;
+      const newR = radiusFromArea(areaR(big.r) + areaR(small.r));
+      const mBig = areaR(big.r), mSmall = areaR(small.r), mt = mBig+mSmall;
+      big.vx = (big.vx*mBig + small.vx*mSmall)/mt;
+      big.vy = (big.vy*mBig + small.vy*mSmall)/mt;
+      big.r = Math.min(newR, Math.min(W,H)/2 - 4);
+      big.x = clamp(big.x, big.r, W-big.r);
+      big.y = clamp(big.y, big.r, H-big.r);
+      big.pulse = 1;
+      small.dead = true;
+      spawnBurst(small.x, small.y, TEAM_COLOR[big.team].main, 10, 1.4);
+    }
+  }
+
+  function splitBall(ball, dirx, diry, newBalls){
+    const newR = Math.max(SPLIT_FLOOR_R, ball.r/Math.SQRT2);
+    const perpx = -diry, perpy = dirx;
+    const speed = 1.6;
+    for(const sign of [1,-1]){
+      const ox = perpx*sign*(newR*0.6) - dirx*(newR*0.4);
+      const oy = perpy*sign*(newR*0.6) - dirx*0; // placeholder, fixed below
+      const px = clamp(ball.x + perpx*sign*(newR*1.1) - dirx*newR*0.6, newR, W-newR);
+      const py = clamp(ball.y + perpy*sign*(newR*1.1) - diry*newR*0.6, newR, H-newR);
+      const vx = ball.vx*0.4 + perpx*sign*speed - dirx*speed*0.5;
+      const vy = ball.vy*0.4 + perpy*sign*speed - diry*speed*0.5;
+      newBalls.push(makeBall(ball.team, newR, px, py, vx, vy));
+    }
+  }
+
+  function elasticBounce(a, b, nx, ny){
+    const ma = areaR(a.r), mb = areaR(b.r);
+    const rvx = a.vx - b.vx, rvy = a.vy - b.vy;
+    const velAlongNormal = rvx*nx + rvy*ny;
+    if(velAlongNormal > 0) return; // separating already
+    const restitution = 1.15; // spectacular = extra bounce
+    const j = -(1+restitution)*velAlongNormal / (1/ma + 1/mb);
+    const ix = j*nx, iy = j*ny;
+    a.vx += ix/ma; a.vy += iy/ma;
+    b.vx -= ix/mb; b.vy -= iy/mb;
+    // separate overlap
+    const overlap = (a.r + b.r) - Math.hypot(b.x-a.x, b.y-a.y);
+    if(overlap > 0){
+      a.x -= nx*overlap/2; a.y -= ny*overlap/2;
+      b.x += nx*overlap/2; b.y += ny*overlap/2;
+    }
+  }
+
+  function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+  function spawnBurst(x, y, color, count, spread){
+    for(let i=0;i<count;i++){
+      const ang = rand(0, Math.PI*2);
+      const sp = rand(0.5, spread);
+      particles.push({
+        x, y,
+        vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp,
+        life: 1, decay: rand(0.02,0.045),
+        r: rand(1.5,3.2),
+        color
+      });
+    }
+  }
+
+  // ---------- render ----------
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    // faint grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+    ctx.lineWidth = 1;
+    for(let x=0;x<W;x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+    for(let y=0;y<H;y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+    for(const p of particles){
+      ctx.globalAlpha = Math.max(p.life,0);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    for(const b of balls){
+      const c = TEAM_COLOR[b.team];
+      const pulseR = b.r + (b.pulse>0 ? b.pulse*6 : 0);
+
+      const grad = ctx.createRadialGradient(b.x, b.y, pulseR*0.1, b.x, b.y, pulseR*1.4);
+      grad.addColorStop(0, c.glow);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, pulseR*1.4, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+      ctx.fillStyle = c.main;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(b.x - b.r*0.3, b.y - b.r*0.3, b.r*0.35, 0, Math.PI*2);
+      ctx.fillStyle = c.core;
+      ctx.globalAlpha = 0.55;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    const blueN = balls.filter(b=>b.team==='blue').length;
+    const redN = balls.filter(b=>b.team==='red').length;
+    blueCountEl.textContent = blueN;
+    redCountEl.textContent = redN;
+    totalCountEl.textContent = balls.length;
+  }
+
+  function loop(){
+    if(running) step();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  restartBtn.addEventListener('click', init);
+  resetBtn.addEventListener('click', init);
+
+  init();
+  loop();
+})();
+</script>
+</body>
+</html>
