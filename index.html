@@ -94,7 +94,14 @@
   }
   button:hover{ border-color:var(--ink); color:#fff; }
 
-  #controls{ display:flex; gap:10px; }
+  #controls{ display:flex; gap:14px; align-items:center; }
+  #countLabel{ font-size:12px; letter-spacing:0.08em; color:var(--dim); }
+  #countVal{ color:var(--ink); }
+  input[type="range"]{
+    accent-color: var(--dim);
+    width:140px;
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
@@ -116,6 +123,8 @@
   </div>
 
   <div id="controls">
+    <label id="countLabel" for="countSlider">Balls per team: <span id="countVal">9</span></label>
+    <input type="range" id="countSlider" min="2" max="25" value="9" step="1">
     <button id="resetBtn">Reset</button>
   </div>
 </div>
@@ -126,11 +135,11 @@
 
   // ---------- config ----------
   const W = 860, H = 560;
-  const PER_TEAM = 9;
+  let PER_TEAM = 9;
   const BASE_R = 11;
-  const MAX_DRIFT_ACCEL = 0.06;
-  const MAX_SPEED = 2.6;
-  const FRICTION = 0.995;
+  const MAX_DRIFT_ACCEL = 0.16;
+  const MAX_SPEED = 5.2;
+  const FRICTION = 0.997;
   const SIZE_MATCH_TOL = 0.08;      // relative radius diff considered "same size"
   const SPLIT_MIN_R = 27;           // above this radius, equal-size collisions split instead of bounce
   const SPLIT_FLOOR_R = 9;          // never split into something smaller than this
@@ -146,6 +155,8 @@
   const winnerLabel = document.getElementById('winnerLabel');
   const restartBtn = document.getElementById('restartBtn');
   const resetBtn = document.getElementById('resetBtn');
+  const countSlider = document.getElementById('countSlider');
+  const countVal = document.getElementById('countVal');
 
   const TEAM_COLOR = {
     blue: { main:'#3fa9ff', glow:'rgba(63,169,255,0.55)', core:'#dff1ff' },
@@ -167,8 +178,8 @@
       team, r,
       x: x ?? rand(r+2, W-r-2),
       y: y ?? rand(r+2, H-r-2),
-      vx: vx ?? rand(-1,1),
-      vy: vy ?? rand(-1,1),
+      vx: vx ?? rand(-2.2,2.2),
+      vy: vy ?? rand(-2.2,2.2),
       dead:false,
       pulse: 0
     };
@@ -195,10 +206,10 @@
       b.vx *= FRICTION; b.vy *= FRICTION;
       const sp = Math.hypot(b.vx, b.vy);
       if(sp > MAX_SPEED){ b.vx = b.vx/sp*MAX_SPEED; b.vy = b.vy/sp*MAX_SPEED; }
-      if(sp < 0.25){ // keep drifting, never fully stall
+      if(sp < 0.9){ // keep drifting, never fully stall
         const ang = rand(0, Math.PI*2);
-        b.vx += Math.cos(ang)*0.05;
-        b.vy += Math.sin(ang)*0.05;
+        b.vx += Math.cos(ang)*0.12;
+        b.vy += Math.sin(ang)*0.12;
       }
       b.x += b.vx; b.y += b.vy;
 
@@ -410,6 +421,13 @@
 
   restartBtn.addEventListener('click', init);
   resetBtn.addEventListener('click', init);
+  countSlider.addEventListener('input', ()=>{
+    countVal.textContent = countSlider.value;
+  });
+  countSlider.addEventListener('change', ()=>{
+    PER_TEAM = parseInt(countSlider.value, 10);
+    init();
+  });
 
   init();
   loop();
